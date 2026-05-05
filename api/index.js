@@ -273,21 +273,10 @@ app.post('/api/visitors/track', async (req, res) => {
 
 app.get('/api/admin/visitors', requireAuth, async (req, res) => {
     try {
-        const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
-
-        const onlineResult = await pool.query(
-            "SELECT COUNT(DISTINCT visitor_id) as online FROM visitors WHERE last_active > CURRENT_TIMESTAMP - INTERVAL '5 minutes'"
-        );
-        const todayResult = await pool.query(
-            "SELECT COUNT(DISTINCT visitor_id) as today FROM visitors WHERE first_seen::date = CURRENT_DATE"
-        );
         const totalResult = await pool.query(
             'SELECT COUNT(DISTINCT visitor_id) as total FROM visitors'
         );
-
         res.json({
-            online: parseInt(onlineResult.rows[0].online) || 0,
-            today: parseInt(todayResult.rows[0].today) || 0,
             total: parseInt(totalResult.rows[0].total) || 0
         });
     } catch (err) {

@@ -234,7 +234,7 @@
         /* Stats Cards */
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
             gap: 20px;
             margin-bottom: 40px;
         }
@@ -596,13 +596,8 @@
                     </div>
                     <div class="stat-card">
                         <div class="stat-icon" style="background: rgba(201, 169, 110, 0.1); color: var(--gold);"><i class="fas fa-users"></i></div>
-                        <div class="stat-value" id="statOnline">0</div>
-                        <div class="stat-label">زوار متصلين الآن</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon" style="background: rgba(52, 152, 219, 0.1); color: #3498db;"><i class="fas fa-calendar-day"></i></div>
-                        <div class="stat-value" id="statToday">0</div>
-                        <div class="stat-label">زوار اليوم</div>
+                        <div class="stat-value" id="statVisitors">0</div>
+                        <div class="stat-label">إجمالي الزوار</div>
                     </div>
                 </div>
 
@@ -767,12 +762,11 @@
                 }
             } catch(e) {}
 
-            // Load visitor stats
+            // Load total visitors
             try {
                 const visRes = await fetch('/api/admin/visitors');
                 const visData = await visRes.json();
-                document.getElementById('statOnline').textContent = visData.online;
-                document.getElementById('statToday').textContent = visData.today;
+                document.getElementById('statVisitors').textContent = visData.total;
             } catch(e) {}
         }
 
