@@ -68,6 +68,15 @@ async function initDB() {
                 expire TIMESTAMP(6) NOT NULL
             )
         `);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS visitors (
+                id SERIAL PRIMARY KEY,
+                visitor_id VARCHAR(64) UNIQUE NOT NULL,
+                ip_hash VARCHAR(64),
+                last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
 
         // Insert default product
         const prod = await pool.query('SELECT * FROM products WHERE id = 1');
@@ -227,6 +236,59 @@ app.get('/api/admin/stats', requireAuth, async (req, res) => {
             pending_orders: parseInt(pending.rows[0].pending_orders) || 0,
             unseen_orders: parseInt(unseen.rows[0].unseen_orders) || 0,
             revenue: revenue.rows[0].revenue ? parseFloat(revenue.rows[0].revenue) : 0
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ========== VISITOR TRACKING ==========
+app.post('/api/visitors/track', async (req, res) => {
+    const { visitor_id } = req.body;
+    if (!visitor_id) return res.status(400).json({ error: 'visitor_id required' });
+
+    try {
+        const now = new Date();
+        const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
+
+        // Upsert: update last_active if exists, else insert
+        const existing = await pool.query('SELECT * FROM visitors WHERE visitor_id = $1', [visitor_id]);
+        if (existing.rows.length > 0) {
+            await pool.query('UPDATE visitors SET last_active = CURRENT_TIMESTAMP WHERE visitor_id = $1', [visitor_id]);
+        } else {
+            await pool.query(
+                'INSERT INTO visitors (visitor_id, ip_hash, last_active) VALUES ($1, $2, CURRENT_TIMESTAMP)',
+                [visitor_id, req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown']
+            );
+        }
+
+        // Clean old records (older than 1 day)
+        await pool.query("DELETE FROM visitors WHERE last_active < CURRENT_TIMESTAMP - INTERVAL '1 day'");
+
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/visitors', requireAuth, async (req, res) => {
+    try {
+        const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+
+        const onlineResult = await pool.query(
+            "SELECT COUNT(DISTINCT visitor_id) as online FROM visitors WHERE last_active > CURRENT_TIMESTAMP - INTERVAL '5 minutes'"
+        );
+        const todayResult = await pool.query(
+            "SELECT COUNT(DISTINCT visitor_id) as today FROM visitors WHERE first_seen::date = CURRENT_DATE"
+        );
+        const totalResult = await pool.query(
+            'SELECT COUNT(DISTINCT visitor_id) as total FROM visitors'
+        );
+
+        res.json({
+            online: parseInt(onlineResult.rows[0].online) || 0,
+            today: parseInt(todayResult.rows[0].today) || 0,
+            total: parseInt(totalResult.rows[0].total) || 0
         });
     } catch (err) {
         res.status(500).json({ error: err.message });

@@ -709,6 +709,20 @@
     </footer>
 
     <script>
+        // Visitor tracking
+        (function() {
+            let visitorId = localStorage.getItem('sillora_visitor_id');
+            if (!visitorId) {
+                visitorId = 'v_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                localStorage.setItem('sillora_visitor_id', visitorId);
+            }
+            fetch('/api/visitors/track', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ visitor_id: visitorId })
+            }).catch(() => {});
+        })();
+
         // Loader
         window.addEventListener('load', () => {
             setTimeout(() => {
