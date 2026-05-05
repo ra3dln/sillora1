@@ -299,7 +299,7 @@
             display: grid;
             grid-template-columns: repeat(3, 1fr);
             gap: 40px;
-            max-width: 1200px;
+            max-width: 1300px;
             margin: 0 auto;
         }
         .feature-card {
@@ -341,7 +341,7 @@
             position: relative;
         }
         .product-container {
-            max-width: 1200px;
+            max-width: 1300px;
             margin: 0 auto;
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -559,11 +559,11 @@
                     <span>الأناقة</span>
                 </h1>
                 <p class="hero-desc">
-                    عطر SILLORA Black Opium يمنحك حضوراً لا يُنسى بمزيج فريد من البن المحمص، 
+                    عطر SILLORA يمنحك حضوراً لا يُنسى بمزيج فريد من البن المحمص،
                     الفانيليا الدافئة، والزهور البيضاء. ثبات يدوم لأكثر من 12 ساعة.
                 </p>
                 <div class="hero-price">
-                    <span class="price-current">120 ج.م</span>
+                    <span class="price-current">130 ج.م</span>
                     <span class="price-old">150 ج.م</span>
                 </div>
                 <button class="btn-primary" onclick="document.getElementById('order').scrollIntoView({behavior: 'smooth'})">
@@ -607,9 +607,9 @@
                 </div>
             </div>
             <div class="product-details fade-up">
-                <h2>SILLORA <span>Black Opium</span></h2>
+                <h2>SILLORA <span>Perfume</span></h2>
                 <p class="product-desc">
-                    عطر شرقي فاخر يجمع بين القوة والنعومة. مزيج مثالي من حبوب البن المحمصة 
+                    عطر شرقي فاخر يجمع بين القوة والنعومة. مزيج مثالي من حبوب البن المحمصة
                     مع نفحات الفانيليا والياسمين. مناسب للمناسبات الخاصة والاستخدام اليومي.
                 </p>
                 <div class="product-meta">
@@ -627,7 +627,7 @@
                     </div>
                     <div class="meta-item">
                         <i class="fas fa-tag"></i>
-                        <span>السعر: <strong style="color: var(--gold);">120 ج.م</strong> بدلاً من <del>150 ج.م</del></span>
+                        <span>السعر: <strong style="color: var(--gold);">130 ج.م</strong> بدلاً من <del>150 ج.م</del></span>
                     </div>
                 </div>
             </div>
@@ -684,7 +684,7 @@
                         </div>
                         <div class="form-group">
                             <label>السعر الإجمالي</label>
-                            <input type="text" id="totalPrice" value="120 ج.م" readonly style="color: var(--gold); font-weight: 700;">
+                            <input type="text" id="totalPrice" value="130 ج.م" readonly style="color: var(--gold); font-weight: 700;">
                         </div>
                     </div>
                     <button type="submit" class="btn-primary" style="width: 100%;" id="submitBtn">
@@ -700,9 +700,8 @@
         <div class="footer-logo">SILLORA</div>
         <p class="footer-text">عطور فاخرة بلمسة عربية أصيلة</p>
         <div class="social-links">
-            <a href="#"><i class="fab fa-facebook-f"></i></a>
-            <a href="#"><i class="fab fa-instagram"></i></a>
-            <a href="#"><i class="fab fa-whatsapp"></i></a>
+            <a href="https://www.instagram.com/sillora_perfume/" target="_blank"><i class="fab fa-instagram"></i></a>
+            <a href="https://wa.me/201017790641" target="_blank"><i class="fab fa-whatsapp"></i></a>
         </div>
         <div class="copyright">
             © 2024 SILLORA Fragrances. جميع الحقوق محفوظة.
@@ -753,12 +752,47 @@
         // Price calculation
         document.getElementById('quantity').addEventListener('input', function() {
             const qty = parseInt(this.value) || 1;
-            document.getElementById('totalPrice').value = (qty * 120) + ' ج.م';
+            document.getElementById('totalPrice').value = (qty * 130) + ' ج.م';
+        });
+
+        // Phone validation: only numbers and + (only one + at the start)
+        document.getElementById('customerPhone').addEventListener('input', function() {
+            let value = this.value;
+            // Allow + only at the start
+            if (value.length > 0) {
+                let newValue = '';
+                for (let i = 0; i < value.length; i++) {
+                    if (i === 0 && value[i] === '+') {
+                        newValue += '+';
+                    } else if (value[i] >= '0' && value[i] <= '9') {
+                        newValue += value[i];
+                    }
+                }
+                this.value = newValue;
+            }
         });
 
         // Submit order
         async function submitOrder(e) {
             e.preventDefault();
+
+            const name = document.getElementById('customerName').value.trim();
+            const phone = document.getElementById('customerPhone').value.trim();
+            const address = document.getElementById('customerAddress').value.trim();
+
+            // Validate all fields are filled
+            if (!name || !phone || !address) {
+                alert('يرجى ملء جميع الحقول المطلوبة');
+                return;
+            }
+
+            // Validate phone contains only numbers and optionally + at start
+            const phoneRegex = /^\+?[0-9]+$/;
+            if (!phoneRegex.test(phone)) {
+                alert('رقم الهاتف يجب أن يحتوي على أرقام فقط، ويمكن إضافة علامة + في البداية فقط');
+                return;
+            }
+
             const btn = document.getElementById('submitBtn');
             const originalText = btn.innerHTML;
 
@@ -766,9 +800,9 @@
             btn.disabled = true;
 
             const orderData = {
-                customer_name: document.getElementById('customerName').value,
-                phone: document.getElementById('customerPhone').value,
-                address: document.getElementById('customerAddress').value,
+                customer_name: name,
+                phone: phone,
+                address: address,
                 product_id: 1,
                 quantity: parseInt(document.getElementById('quantity').value) || 1
             };
@@ -786,7 +820,7 @@
                     document.getElementById('successMsg').style.display = 'block';
                     document.getElementById('successMsg').scrollIntoView({ behavior: 'smooth' });
                     e.target.reset();
-                    document.getElementById('totalPrice').value = '120 ج.م';
+                    document.getElementById('totalPrice').value = '130 ج.م';
 
                     // Update stock display
                     updateStockDisplay();

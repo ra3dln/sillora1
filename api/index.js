@@ -1,10 +1,8 @@
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const bodyParser = require('body-parser');
-const path = require('path');
-const fs = require('fs');
+const postgres = require('postgres');
 
 const app = express();
 
@@ -18,67 +16,67 @@ app.use(session({
     cookie: { secure: false }
 }));
 
-// Database setup - use /tmp for Vercel
-const dbPath = '/tmp/database.sqlite';
-const dbDir = path.dirname(dbPath);
-if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
+// Database setup
+const sql = postgres(process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL || '');
+
+// Initialize database tables
+async function initDB() {
+    try {
+        await sql`
+            CREATE TABLE IF NOT EXISTS products (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                price REAL NOT NULL,
+                original_price REAL,
+                image TEXT,
+                in_stock INTEGER DEFAULT 1,
+                stock_count INTEGER DEFAULT 5,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `;
+        await sql`
+            CREATE TABLE IF NOT EXISTS orders (
+                id SERIAL PRIMARY KEY,
+                customer_name TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                address TEXT NOT NULL,
+                product_id INTEGER,
+                quantity INTEGER DEFAULT 1,
+                status TEXT DEFAULT 'pending',
+                admin_seen INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `;
+        await sql`
+            CREATE TABLE IF NOT EXISTS admins (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL
+            )
+        `;
+
+        // Insert default product if not exists
+        const products = await sql`SELECT * FROM products WHERE id = 1`;
+        if (products.length === 0) {
+            await sql`
+                INSERT INTO products (name, description, price, original_price, image, stock_count)
+                VALUES ('SILLORA Perfume', 'عطر فاخر بمزيج من البن والفانيليا والزهور البيضاء. ثبات عالٍ وفوحان يدوم طوال اليوم.', 130, 150, '/images/perfume1.png', 5)
+            `;
+        }
+
+        // Insert default admin if not exists
+        const admins = await sql`SELECT * FROM admins WHERE username = 'admin'`;
+        if (admins.length === 0) {
+            const hashedPassword = bcrypt.hashSync('3/5/2026', 10);
+            await sql`INSERT INTO admins (username, password) VALUES ('admin', ${hashedPassword})`;
+        }
+    } catch (err) {
+        console.error('DB Init Error:', err.message);
+    }
 }
 
-const db = new sqlite3.Database(dbPath, (err) => {
-    if (err) console.error('DB Error:', err.message);
-    else console.log('DB Connected');
-});
-
-db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS products (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        description TEXT,
-        price REAL NOT NULL,
-        original_price REAL,
-        image TEXT,
-        in_stock INTEGER DEFAULT 1,
-        stock_count INTEGER DEFAULT 5,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
-
-    db.run(`CREATE TABLE IF NOT EXISTS orders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        customer_name TEXT NOT NULL,
-        phone TEXT NOT NULL,
-        address TEXT NOT NULL,
-        product_id INTEGER,
-        quantity INTEGER DEFAULT 1,
-        status TEXT DEFAULT 'pending',
-        admin_seen INTEGER DEFAULT 0,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
-
-    db.run(`CREATE TABLE IF NOT EXISTS admins (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL
-    )`);
-
-    // Insert defaults
-    db.get("SELECT * FROM products WHERE id = 1", (err, row) => {
-        if (!row) {
-            db.run(`INSERT INTO products (name, description, price, original_price, image, stock_count) 
-                    VALUES (?, ?, ?, ?, ?, ?)`, 
-                ['SILLORA Black Opium', 
-                 'عطر فاخر بمزيج من البن والفانيليا والزهور البيضاء. ثبات عالٍ وفوحان يدوم طوال اليوم.',
-                 120, 150, '/images/perfume1.png', 5]);
-        }
-    });
-
-    db.get("SELECT * FROM admins WHERE username = 'admin'", (err, row) => {
-        if (!row) {
-            const hashedPassword = bcrypt.hashSync('admin123', 10);
-            db.run("INSERT INTO admins (username, password) VALUES (?, ?)", ['admin', hashedPassword]);
-        }
-    });
-});
+initDB();
 
 // Auth middleware
 function requireAuth(req, res, next) {
@@ -90,49 +88,69 @@ function requireAuth(req, res, next) {
 }
 
 // ========== PUBLIC ROUTES ==========
-app.get('/api/products', (req, res) => {
-    db.all("SELECT * FROM products", [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/products', async (req, res) => {
+    try {
+        const rows = await sql`SELECT * FROM products`;
         res.json(rows);
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.get('/api/products/:id', (req, res) => {
-    db.get("SELECT * FROM products WHERE id = ?", [req.params.id], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(row);
-    });
+app.get('/api/products/:id', async (req, res) => {
+    try {
+        const rows = await sql`SELECT * FROM products WHERE id = ${req.params.id}`;
+        res.json(rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.post('/api/orders', (req, res) => {
+app.post('/api/orders', async (req, res) => {
     const { customer_name, phone, address, product_id, quantity } = req.body;
+
     if (!customer_name || !phone || !address) {
         return res.status(400).json({ error: 'All fields are required' });
     }
-    db.run(`INSERT INTO orders (customer_name, phone, address, product_id, quantity) 
-            VALUES (?, ?, ?, ?, ?)`,
-        [customer_name, phone, address, product_id || 1, quantity || 1],
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            db.run("UPDATE products SET stock_count = stock_count - ? WHERE id = ?", 
-                [quantity || 1, product_id || 1]);
-            res.json({ id: this.lastID, message: 'Order placed successfully!' });
-        }
-    );
+
+    try {
+        const result = await sql`
+            INSERT INTO orders (customer_name, phone, address, product_id, quantity)
+            VALUES (${customer_name}, ${phone}, ${address}, ${product_id || 1}, ${quantity || 1})
+            RETURNING id
+        `;
+
+        await sql`
+            UPDATE products SET stock_count = stock_count - ${quantity || 1} WHERE id = ${product_id || 1}
+        `;
+
+        res.json({ id: result[0].id, message: 'Order placed successfully!' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // ========== ADMIN ROUTES ==========
-app.post('/api/admin/login', (req, res) => {
+app.post('/api/admin/login', async (req, res) => {
     const { username, password } = req.body;
-    db.get("SELECT * FROM admins WHERE username = ?", [username], (err, user) => {
-        if (err || !user) return res.status(401).json({ error: 'Invalid credentials' });
+
+    try {
+        const users = await sql`SELECT * FROM admins WHERE username = ${username}`;
+        const user = users[0];
+
+        if (!user) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+
         if (bcrypt.compareSync(password, user.password)) {
             req.session.admin = { id: user.id, username: user.username };
             res.json({ message: 'Login successful', admin: req.session.admin });
         } else {
             res.status(401).json({ error: 'Invalid credentials' });
         }
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.post('/api/admin/logout', (req, res) => {
@@ -144,54 +162,71 @@ app.get('/api/admin/me', requireAuth, (req, res) => {
     res.json({ admin: req.session.admin });
 });
 
-app.get('/api/admin/orders', requireAuth, (req, res) => {
-    db.all(`SELECT o.*, p.name as product_name, p.price as product_price 
-            FROM orders o LEFT JOIN products p ON o.product_id = p.id 
-            ORDER BY o.created_at DESC`, [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/admin/orders', requireAuth, async (req, res) => {
+    try {
+        const rows = await sql`
+            SELECT o.*, p.name as product_name, p.price as product_price
+            FROM orders o
+            LEFT JOIN products p ON o.product_id = p.id
+            ORDER BY o.created_at DESC
+        `;
         res.json(rows);
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.put('/api/admin/orders/:id/seen', requireAuth, (req, res) => {
-    db.run("UPDATE orders SET admin_seen = 1 WHERE id = ?", [req.params.id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
+app.put('/api/admin/orders/:id/seen', requireAuth, async (req, res) => {
+    try {
+        await sql`UPDATE orders SET admin_seen = 1 WHERE id = ${req.params.id}`;
         res.json({ message: 'Order marked as seen' });
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.put('/api/admin/orders/:id/status', requireAuth, (req, res) => {
+app.put('/api/admin/orders/:id/status', requireAuth, async (req, res) => {
     const { status } = req.body;
-    db.run("UPDATE orders SET status = ? WHERE id = ?", [status, req.params.id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
+    try {
+        await sql`UPDATE orders SET status = ${status} WHERE id = ${req.params.id}`;
         res.json({ message: 'Status updated' });
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.put('/api/admin/products/:id/stock', requireAuth, (req, res) => {
+app.put('/api/admin/products/:id/stock', requireAuth, async (req, res) => {
     const { in_stock, stock_count } = req.body;
-    db.run("UPDATE products SET in_stock = ?, stock_count = ? WHERE id = ?", 
-        [in_stock, stock_count, req.params.id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
+    try {
+        await sql`
+            UPDATE products SET in_stock = ${in_stock}, stock_count = ${stock_count} WHERE id = ${req.params.id}
+        `;
         res.json({ message: 'Stock updated' });
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.get('/api/admin/stats', requireAuth, (req, res) => {
-    db.get("SELECT COUNT(*) as total_orders FROM orders", [], (err, orders) => {
-        db.get("SELECT COUNT(*) as pending_orders FROM orders WHERE status = 'pending'", [], (err, pending) => {
-            db.get("SELECT COUNT(*) as unseen_orders FROM orders WHERE admin_seen = 0", [], (err, unseen) => {
-                db.get("SELECT SUM(price * quantity) as revenue FROM orders o JOIN products p ON o.product_id = p.id WHERE o.status = 'completed'", [], (err, revenue) => {
-                    res.json({
-                        total_orders: orders ? orders.total_orders : 0,
-                        pending_orders: pending ? pending.pending_orders : 0,
-                        unseen_orders: unseen ? unseen.unseen_orders : 0,
-                        revenue: revenue && revenue.revenue ? revenue.revenue : 0
-                    });
-                });
-            });
+app.get('/api/admin/stats', requireAuth, async (req, res) => {
+    try {
+        const orders = await sql`SELECT COUNT(*) as total_orders FROM orders`;
+        const pending = await sql`SELECT COUNT(*) as pending_orders FROM orders WHERE status = 'pending'`;
+        const unseen = await sql`SELECT COUNT(*) as unseen_orders FROM orders WHERE admin_seen = 0`;
+        const revenue = await sql`
+            SELECT SUM(p.price * o.quantity) as revenue
+            FROM orders o JOIN products p ON o.product_id = p.id
+            WHERE o.status = 'completed'
+        `;
+
+        res.json({
+            total_orders: parseInt(orders[0].total_orders) || 0,
+            pending_orders: parseInt(pending[0].pending_orders) || 0,
+            unseen_orders: parseInt(unseen[0].unseen_orders) || 0,
+            revenue: revenue[0].revenue ? parseFloat(revenue[0].revenue) : 0
         });
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Export for Vercel serverless
