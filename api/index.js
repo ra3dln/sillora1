@@ -194,4 +194,7 @@ app.get('/api/admin/stats', requireAuth, (req, res) => {
     });
 });
 
-module.exports = app;
+// Export for Vercel serverless
+module.exports = (req, res) => {
+    return app(req, res);
+};
