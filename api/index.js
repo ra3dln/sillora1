@@ -2,40 +2,46 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const bodyParser = require('body-parser');
-const postgres = require('postgres');
+const { Pool } = require('pg');
 
 const app = express();
 
 // Middleware
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+
+// Session with Postgres store for Vercel
+const pgSession = require('connect-pg-simple')(session);
+const pool = new Pool({
+    connectionString: process.env.POSTGRES_URL || process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
+
 app.use(session({
+    store: new pgSession({ pool, tableName: 'session' }),
     secret: process.env.SESSION_SECRET || 'sillora_secret_key_2024',
     resave: false,
     saveUninitialized: false,
-    cookie: { secure: false }
+    cookie: { secure: false, maxAge: 30 * 24 * 60 * 60 * 1000 }
 }));
 
-// Database setup
-const sql = postgres(process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL || '');
-
-// Initialize database tables
+// Initialize database
 async function initDB() {
     try {
-        await sql`
+        await pool.query(`
             CREATE TABLE IF NOT EXISTS products (
                 id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL,
                 description TEXT,
-                price REAL NOT NULL,
-                original_price REAL,
+                price NUMERIC NOT NULL,
+                original_price NUMERIC,
                 image TEXT,
                 in_stock INTEGER DEFAULT 1,
                 stock_count INTEGER DEFAULT 5,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        `;
-        await sql`
+        `);
+        await pool.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
                 customer_name TEXT NOT NULL,
@@ -47,30 +53,40 @@ async function initDB() {
                 admin_seen INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        `;
-        await sql`
+        `);
+        await pool.query(`
             CREATE TABLE IF NOT EXISTS admins (
                 id SERIAL PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
                 password TEXT NOT NULL
             )
-        `;
+        `);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS session (
+                sid VARCHAR NOT NULL COLLATE "default" PRIMARY KEY,
+                sess JSON NOT NULL,
+                expire TIMESTAMP(6) NOT NULL
+            )
+        `);
 
-        // Insert default product if not exists
-        const products = await sql`SELECT * FROM products WHERE id = 1`;
-        if (products.length === 0) {
-            await sql`
-                INSERT INTO products (name, description, price, original_price, image, stock_count)
-                VALUES ('SILLORA Perfume', 'عطر فاخر بمزيج من البن والفانيليا والزهور البيضاء. ثبات عالٍ وفوحان يدوم طوال اليوم.', 130, 150, '/images/perfume1.png', 5)
-            `;
+        // Insert default product
+        const prod = await pool.query('SELECT * FROM products WHERE id = 1');
+        if (prod.rows.length === 0) {
+            await pool.query(
+                `INSERT INTO products (name, description, price, original_price, image, stock_count)
+                 VALUES ($1, $2, $3, $4, $5, $6)`,
+                ['SILLORA Perfume', 'عطر فاخر بمزيج من البن والفانيليا والزهور البيضاء. ثبات عالٍ وفوحان يدوم طوال اليوم.', 130, 150, '/images/perfume1.png', 5]
+            );
         }
 
-        // Insert default admin if not exists
-        const admins = await sql`SELECT * FROM admins WHERE username = 'admin'`;
-        if (admins.length === 0) {
+        // Insert default admin
+        const adm = await pool.query("SELECT * FROM admins WHERE username = 'admin'");
+        if (adm.rows.length === 0) {
             const hashedPassword = bcrypt.hashSync('3/5/2026', 10);
-            await sql`INSERT INTO admins (username, password) VALUES ('admin', ${hashedPassword})`;
+            await pool.query("INSERT INTO admins (username, password) VALUES ($1, $2)", ['admin', hashedPassword]);
         }
+
+        console.log('DB initialized successfully');
     } catch (err) {
         console.error('DB Init Error:', err.message);
     }
@@ -90,8 +106,8 @@ function requireAuth(req, res, next) {
 // ========== PUBLIC ROUTES ==========
 app.get('/api/products', async (req, res) => {
     try {
-        const rows = await sql`SELECT * FROM products`;
-        res.json(rows);
+        const result = await pool.query('SELECT * FROM products');
+        res.json(result.rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -99,8 +115,8 @@ app.get('/api/products', async (req, res) => {
 
 app.get('/api/products/:id', async (req, res) => {
     try {
-        const rows = await sql`SELECT * FROM products WHERE id = ${req.params.id}`;
-        res.json(rows[0]);
+        const result = await pool.query('SELECT * FROM products WHERE id = $1', [req.params.id]);
+        res.json(result.rows[0]);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -108,23 +124,17 @@ app.get('/api/products/:id', async (req, res) => {
 
 app.post('/api/orders', async (req, res) => {
     const { customer_name, phone, address, product_id, quantity } = req.body;
-
     if (!customer_name || !phone || !address) {
         return res.status(400).json({ error: 'All fields are required' });
     }
-
     try {
-        const result = await sql`
-            INSERT INTO orders (customer_name, phone, address, product_id, quantity)
-            VALUES (${customer_name}, ${phone}, ${address}, ${product_id || 1}, ${quantity || 1})
-            RETURNING id
-        `;
-
-        await sql`
-            UPDATE products SET stock_count = stock_count - ${quantity || 1} WHERE id = ${product_id || 1}
-        `;
-
-        res.json({ id: result[0].id, message: 'Order placed successfully!' });
+        const result = await pool.query(
+            `INSERT INTO orders (customer_name, phone, address, product_id, quantity)
+             VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+            [customer_name, phone, address, product_id || 1, quantity || 1]
+        );
+        await pool.query('UPDATE products SET stock_count = stock_count - $1 WHERE id = $2', [quantity || 1, product_id || 1]);
+        res.json({ id: result.rows[0].id, message: 'Order placed successfully!' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -133,18 +143,15 @@ app.post('/api/orders', async (req, res) => {
 // ========== ADMIN ROUTES ==========
 app.post('/api/admin/login', async (req, res) => {
     const { username, password } = req.body;
-
     try {
-        const users = await sql`SELECT * FROM admins WHERE username = ${username}`;
-        const user = users[0];
-
-        if (!user) {
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
-
+        const result = await pool.query('SELECT * FROM admins WHERE username = $1', [username]);
+        const user = result.rows[0];
+        if (!user) return res.status(401).json({ error: 'Invalid credentials' });
         if (bcrypt.compareSync(password, user.password)) {
             req.session.admin = { id: user.id, username: user.username };
-            res.json({ message: 'Login successful', admin: req.session.admin });
+            req.session.save(() => {
+                res.json({ message: 'Login successful', admin: req.session.admin });
+            });
         } else {
             res.status(401).json({ error: 'Invalid credentials' });
         }
@@ -154,8 +161,9 @@ app.post('/api/admin/login', async (req, res) => {
 });
 
 app.post('/api/admin/logout', (req, res) => {
-    req.session.destroy();
-    res.json({ message: 'Logged out' });
+    req.session.destroy(() => {
+        res.json({ message: 'Logged out' });
+    });
 });
 
 app.get('/api/admin/me', requireAuth, (req, res) => {
@@ -164,13 +172,12 @@ app.get('/api/admin/me', requireAuth, (req, res) => {
 
 app.get('/api/admin/orders', requireAuth, async (req, res) => {
     try {
-        const rows = await sql`
-            SELECT o.*, p.name as product_name, p.price as product_price
-            FROM orders o
-            LEFT JOIN products p ON o.product_id = p.id
-            ORDER BY o.created_at DESC
-        `;
-        res.json(rows);
+        const result = await pool.query(
+            `SELECT o.*, p.name as product_name, p.price as product_price
+             FROM orders o LEFT JOIN products p ON o.product_id = p.id
+             ORDER BY o.created_at DESC`
+        );
+        res.json(result.rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -178,7 +185,7 @@ app.get('/api/admin/orders', requireAuth, async (req, res) => {
 
 app.put('/api/admin/orders/:id/seen', requireAuth, async (req, res) => {
     try {
-        await sql`UPDATE orders SET admin_seen = 1 WHERE id = ${req.params.id}`;
+        await pool.query('UPDATE orders SET admin_seen = 1 WHERE id = $1', [req.params.id]);
         res.json({ message: 'Order marked as seen' });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -188,7 +195,7 @@ app.put('/api/admin/orders/:id/seen', requireAuth, async (req, res) => {
 app.put('/api/admin/orders/:id/status', requireAuth, async (req, res) => {
     const { status } = req.body;
     try {
-        await sql`UPDATE orders SET status = ${status} WHERE id = ${req.params.id}`;
+        await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [status, req.params.id]);
         res.json({ message: 'Status updated' });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -198,9 +205,7 @@ app.put('/api/admin/orders/:id/status', requireAuth, async (req, res) => {
 app.put('/api/admin/products/:id/stock', requireAuth, async (req, res) => {
     const { in_stock, stock_count } = req.body;
     try {
-        await sql`
-            UPDATE products SET in_stock = ${in_stock}, stock_count = ${stock_count} WHERE id = ${req.params.id}
-        `;
+        await pool.query('UPDATE products SET in_stock = $1, stock_count = $2 WHERE id = $3', [in_stock, stock_count, req.params.id]);
         res.json({ message: 'Stock updated' });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -209,27 +214,23 @@ app.put('/api/admin/products/:id/stock', requireAuth, async (req, res) => {
 
 app.get('/api/admin/stats', requireAuth, async (req, res) => {
     try {
-        const orders = await sql`SELECT COUNT(*) as total_orders FROM orders`;
-        const pending = await sql`SELECT COUNT(*) as pending_orders FROM orders WHERE status = 'pending'`;
-        const unseen = await sql`SELECT COUNT(*) as unseen_orders FROM orders WHERE admin_seen = 0`;
-        const revenue = await sql`
-            SELECT SUM(p.price * o.quantity) as revenue
-            FROM orders o JOIN products p ON o.product_id = p.id
-            WHERE o.status = 'completed'
-        `;
-
+        const orders = await pool.query('SELECT COUNT(*) as total_orders FROM orders');
+        const pending = await pool.query("SELECT COUNT(*) as pending_orders FROM orders WHERE status = 'pending'");
+        const unseen = await pool.query('SELECT COUNT(*) as unseen_orders FROM orders WHERE admin_seen = 0');
+        const revenue = await pool.query(
+            `SELECT SUM(p.price * o.quantity) as revenue
+             FROM orders o JOIN products p ON o.product_id = p.id
+             WHERE o.status = 'completed'`
+        );
         res.json({
-            total_orders: parseInt(orders[0].total_orders) || 0,
-            pending_orders: parseInt(pending[0].pending_orders) || 0,
-            unseen_orders: parseInt(unseen[0].unseen_orders) || 0,
-            revenue: revenue[0].revenue ? parseFloat(revenue[0].revenue) : 0
+            total_orders: parseInt(orders.rows[0].total_orders) || 0,
+            pending_orders: parseInt(pending.rows[0].pending_orders) || 0,
+            unseen_orders: parseInt(unseen.rows[0].unseen_orders) || 0,
+            revenue: revenue.rows[0].revenue ? parseFloat(revenue.rows[0].revenue) : 0
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Export for Vercel serverless
-module.exports = (req, res) => {
-    return app(req, res);
-};
+module.exports = (req, res) => app(req, res);
